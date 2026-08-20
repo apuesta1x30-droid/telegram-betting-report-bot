@@ -1,98 +1,84 @@
 """
-Scraper para extraer estadísticas de la web de Streamlit.
-Usa Playwright para renderizar la página y extraer los datos dinámicos.
+Scraper de diagnóstico para la web de Streamlit.
+Toma screenshot, extrae HTML y prueba múltiples estrategias.
 """
 
 from playwright.sync_api import sync_playwright
 import re
+import os
 
 
 def extract_stats():
-    """
-    Extrae las estadísticas principales de la web de apuestas.
-    
-    Returns:
-        dict: Diccionario con los KPIs extraídos.
-    """
     url = "https://football-betting-ai2-xay2ankt3xzaecxpbu6nwf.streamlit.app/"
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
+        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        page = browser.new_page(viewport={"width": 1280, "height": 900})
         
         print(f"Navegando a {url}...")
-        page.goto(url, wait_until="networkidle")
+        page.goto(url, wait_until="networkidle", timeout=30000)
         
-        # Esperar a que Streamlit cargue completamente el contenido
-        print("Esperando carga completa de Streamlit...")
-        page.wait_for_timeout(8000)  # Más tiempo para asegurar carga
+        print("Esperando carga completa...")
+        page.wait_for_timeout(10000)
         
-        # Extraer todo el texto visible de la página
-        full_text = page.inner_text("body")
+        # === DIAGNÓSTICO 1: Captura de pantalla ===
+        screenshot_path = "screenshot.png"
+        page.screenshot(path=screenshot_path, full_page=True)
+        print(f" Screenshot guardado en: {os.path.abspath(screenshot_path)}")
+        
+        # === DIAGNÓSTICO 2: HTML completo ===
+        html_content = page.content()
+        html_path = "page.html"
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+        print(f"📄 HTML guardado en: {os.path.abspath(html_path)}")
+        print(f"   Tamaño del HTML: {len(html_content)} caracteres")
+        
+        # === DIAGNÓSTICO 3: Texto con diferentes selectores ===
+        print("\n--- Prueba de selectores ---")
+        
+        # Selector 1: body
+        text_body = page.inner_text("body")
+        print(f"inner_text('body'): {len(text_body)} chars")
+        
+        # Selector 2: Streamlit container
+        try:
+            text_st = page.inner_text("[data-testid='stVerticalBlock']")
+            print(f"inner_text('stVerticalBlock'): {len(text_st)} chars")
+        except Exception as e:
+            print(f"stVerticalBlock: {e}")
+        
+        # Selector 3: Todos los divs
+        try:
+            text_divs = page.inner_text("div")
+            print(f"inner_text('div'): {len(text_divs)} chars")
+        except Exception as e:
+            print(f"div: {e}")
+        
+        # Selector 4: Streamlit text elements
+        try:
+            elements = page.query_selector_all(".stText, .stMarkdown, p, h1, h2, h3, span")
+            print(f"Elementos de texto encontrados: {len(elements)}")
+            for i, el in enumerate(elements[:10]):
+                txt = el.inner_text()
+                if txt.strip():
+                    print(f"  [{i}] {txt[:100]}")
+        except Exception as e:
+            print(f"query_selector_all: {e}")
+        
+        # === DIAGNÓSTICO 4: Título de la página ===
+        title = page.title()
+        print(f"\n📌 Título de la página: '{title}'")
+        
+        # === DIAGNÓSTICO 5: URL actual ===
+        print(f"📌 URL actual: {page.url}")
         
         browser.close()
     
-    # === MODO DEPURACIÓN: Mostrar texto completo ===
-    print("\n" + "="*80)
-    print("TEXTO CRUDO EXTRAÍDO DE LA WEB:")
-    print("="*80)
-    print(full_text[:3000])  # Primeros 3000 caracteres
-    print("\n" + "="*80)
-    print("FIN DEL TEXTO")
-    print("="*80 + "\n")
-    
-    # Parsear los datos con expresiones regulares más flexibles
-    stats = {}
-    
-    # Total Picks - buscar patrones más flexibles
-    picks_match = re.search(r"Total\s*Picks\s*[:\s]*(\d+)", full_text, re.IGNORECASE)
-    stats["total_picks"] = int(picks_match.group(1)) if picks_match else None
-    
-    # Liquidados
-    liquidados_match = re.search(r"Liquidados\s*[:\s]*(\d+)", full_text, re.IGNORECASE)
-    stats["liquidados"] = int(liquidados_match.group(1)) if liquidados_match else None
-    
-    # Aciertos (con o sin emoji)
-    aciertos_match = re.search(r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)", full_text, re.IGNORECASE)
-    stats["aciertos"] = int(aciertos_match.group(1)) if aciertos_match else None
-    
-    # Errores (con o sin emoji)
-    errores_match = re.search(r"(?:\s*)?Errores?\s*[:\s]*(\d+)", full_text, re.IGNORECASE)
-    stats["errores"] = int(errores_match.group(1)) if errores_match else None
-    
-    # Hit Rate
-    hitrate_match = re.search(r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%", full_text, re.IGNORECASE)
-    stats["hit_rate"] = float(hitrate_match.group(1)) if hitrate_match else None
-    
-    # PnL (puede ser negativo o positivo)
-    pnl_match = re.search(r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u", full_text, re.IGNORECASE)
-    stats["pnl"] = float(pnl_match.group(1)) if pnl_match else None
-    
-    # Yield
-    yield_match = re.search(r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%", full_text, re.IGNORECASE)
-    stats["yield"] = float(yield_match.group(1)) if yield_match else None
-    
-    # EV medio declarado
-    ev_match = re.search(r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%", full_text, re.IGNORECASE | re.DOTALL)
-    stats["ev_medio"] = float(ev_match.group(1)) if ev_match else None
-    
-    # Sobreestimación
-    sobreest_match = re.search(r"sobreestima.*?([-+]?\d+\.?\d*)\s*pp", full_text, re.IGNORECASE)
-    stats["sobreestimacion"] = float(sobreest_match.group(1)) if sobreest_match else None
-    
-    # CLV medio
-    clv_match = re.search(r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%", full_text, re.IGNORECASE)
-    stats["clv_medio"] = float(clv_match.group(1)) if clv_match else None
-    
-    print("Extracción completada:")
-    for key, value in stats.items():
-        print(f"  {key}: {value}")
-    
-    return stats
+    return {"screenshot": screenshot_path, "html": html_path}
 
 
 if __name__ == "__main__":
-    # Prueba local del scraper
-    stats = extract_stats()
-    print("\nResultado final:")
-    print(stats)
+    print("🔍 Iniciando scraper de diagnóstico...\n")
+    result = extract_stats()
+    print("\n✅ Diagnóstico completado")
