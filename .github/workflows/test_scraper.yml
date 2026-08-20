@@ -23,9 +23,9 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run Diagnostic Scraper
+      - name: Run Robust Scraper
         run: |
-          echo "🔍 Iniciando diagnóstico..."
+          echo "🔍 Iniciando scraper robusto..."
           python src/scraper.py
 
       - name: Upload Screenshot
