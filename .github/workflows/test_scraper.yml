@@ -1,7 +1,7 @@
-name: Test Scraper
+name: Test Scraper (Diagnóstico)
 
 on:
-  workflow_dispatch:  # Permite ejecutarlo manualmente
+  workflow_dispatch:
 
 jobs:
   test-extraction:
@@ -23,7 +23,21 @@ jobs:
           playwright install chromium
           playwright install-deps chromium
 
-      - name: Run Scraper Test
+      - name: Run Diagnostic Scraper
         run: |
-          echo "🧪 Iniciando prueba del scraper..."
+          echo "🔍 Iniciando diagnóstico..."
           python src/scraper.py
+
+      - name: Upload Screenshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot
+          path: screenshot.png
+          retention-days: 7
+
+      - name: Upload HTML
+        uses: actions/upload-artifact@v4
+        with:
+          name: page-html
+          path: page.html
+          retention-days: 7
