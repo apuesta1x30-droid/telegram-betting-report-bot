@@ -1,21 +1,24 @@
 """
-Bot de informes semanales para Telegram.
-Extrae estadísticas de la web de Streamlit y envía un informe ejecutivo.
-Se ejecuta semanalmente vía cron job en Render.
+Bot de informes semanales para Telegram con endpoint HTTP.
+Diseñado para ejecutarse en Render y ser activado por un Cron Job externo.
 """
 
-from playwright.sync_api import sync_playwright
-import requests
 import os
-from datetime import datetime
 import re
+import logging
+from datetime import datetime
+from flask import Flask, jsonify, request
+from playwright.sync_api import sync_playwright
 
+# Configuración de logs
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+app = Flask(__name__)
 
 def extract_stats():
     """Extrae las estadísticas de la web de Streamlit"""
     url = "https://football-betting-ai2-xay2ankt3xzaecxpbu6nwf.streamlit.app/"
-    
-    print(f"🔍 Conectando a {url}...")
+    logging.info(f"Conectando a {url}...")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -30,100 +33,66 @@ def extract_stats():
         
         try:
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            print("⏳ Esperando renderizado completo...")
+            logging.info("Esperando renderizado completo (30s)...")
             page.wait_for_timeout(30000)
             
             all_text = page.inner_text("body")
             browser.close()
             return all_text
-            
         except Exception as e:
-            print(f"❌ Error: {e}")
+            logging.error(f"Error en Playwright: {e}")
             browser.close()
             return None
 
-
 def parse_stats(text):
-    """Parsea el texto extraído y devuelve un diccionario de estadísticas"""
+    """Parsea el texto extraído y devuelve un diccionario"""
     if not text:
         return None
     
     stats = {}
+    patterns = {
+        "total_picks": r"Total\s*Picks\s*[:\s]*(\d+)",
+        "liquidados": r"Liquidados\s*[:\s]*(\d+)",
+        "pendientes": r"Pendientes\s*[:\s]*(\d+)",
+        "aciertos": r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)",
+        "errores": r"(?:\s*)?Errores?\s*[:\s]*(\d+)",
+        "hit_rate": r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%",
+        "pnl": r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u",
+        "yield": r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%",
+        "ev_medio": r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%",
+        "sobreestimacion": r"SOBREESTIMA.*?([-+]?\d+\.?\d*)\s*pp",
+        "clv_medio": r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%"
+    }
     
-    # Total Picks
-    match = re.search(r"Total\s*Picks\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    stats["total_picks"] = int(match.group(1)) if match else None
-    
-    # Liquidados
-    match = re.search(r"Liquidados\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    stats["liquidados"] = int(match.group(1)) if match else None
-    
-    # Pendientes
-    match = re.search(r"Pendientes\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    stats["pendientes"] = int(match.group(1)) if match else None
-    
-    # Aciertos
-    match = re.search(r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    stats["aciertos"] = int(match.group(1)) if match else None
-    
-    # Errores
-    match = re.search(r"(?:\s*)?Errores?\s*[:\s]*(\d+)", text, re.IGNORECASE)
-    stats["errores"] = int(match.group(1)) if match else None
-    
-    # Hit Rate
-    match = re.search(r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%", text, re.IGNORECASE)
-    stats["hit_rate"] = float(match.group(1)) if match else None
-    
-    # PnL
-    match = re.search(r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u", text, re.IGNORECASE)
-    stats["pnl"] = float(match.group(1)) if match else None
-    
-    # Yield
-    match = re.search(r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%", text, re.IGNORECASE)
-    stats["yield"] = float(match.group(1)) if match else None
-    
-    # EV medio
-    match = re.search(r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%", text, re.IGNORECASE | re.DOTALL)
-    stats["ev_medio"] = float(match.group(1)) if match else None
-    
-    # Sobreestimación
-    match = re.search(r"SOBREESTIMA.*?([-+]?\d+\.?\d*)\s*pp", text, re.IGNORECASE)
-    stats["sobreestimacion"] = float(match.group(1)) if match else None
-    
-    # CLV medio
-    match = re.search(r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%", text, re.IGNORECASE)
-    stats["clv_medio"] = float(match.group(1)) if match else None
-    
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE | (re.DOTALL if key == "ev_medio" else 0))
+        if match:
+            val = match.group(1)
+            stats[key] = float(val) if '.' in val else int(val)
+        else:
+            stats[key] = None
+            
     return stats
-
 
 def generate_report(stats):
     """Genera el mensaje de informe ejecutivo"""
     if not stats:
-        return "❌ Error: No se pudieron extraer los datos."
+        return "❌ Error: No se pudieron extraer los datos de la web."
     
-    # Calcular recomendación basada en sobreestimación
-    sobreest = stats.get('sobreestimacion', 0)
+    sobreest = stats.get('sobreestimacion', 0) or 0
     if sobreest > 30:
-        recomendacion = " **CRÍTICO**: El modelo sobreestima gravemente. Suspender apuestas o reducir stake al 25%."
+        recomendacion = "🚨 **CRÍTICO**: El modelo sobreestima gravemente. Suspender apuestas o reducir stake al 25%."
     elif sobreest > 20:
-        recomendacion = " **ALERTA**: Sobreestimación alta. Reducir stake al 50% hasta mejorar calibración."
+        recomendacion = "⚠️ **ALERTA**: Sobreestimación alta. Reducir stake al 50% hasta mejorar calibración."
     elif sobreest > 10:
         recomendacion = "🟡 **PRECAUCIÓN**: Ligera sobreestimación. Mantener stakes conservadores."
     else:
-        recomendacion = " **OK**: El modelo está razonablemente calibrado."
+        recomendacion = "✅ **OK**: El modelo está razonablemente calibrado."
     
-    # Calificar CLV
-    clv = stats.get('clv_medio', 0)
-    if clv > 0:
-        clv_status = "✅ Positivo (batas al mercado)"
-    elif clv > -5:
-        clv_status = "⚠️ Ligeramente negativo"
-    else:
-        clv_status = "❌ Negativo (no bates al mercado)"
+    clv = stats.get('clv_medio', 0) or 0
+    clv_status = "✅ Positivo" if clv > 0 else ("⚠️ Ligeramente negativo" if clv > -5 else "❌ Negativo")
     
-    # Formatear mensaje
-    report = f""" *INFORME SEMANAL - {datetime.now().strftime('%d/%m/%Y')}*
+    return f"""📊 *INFORME SEMANAL - {datetime.now().strftime('%d/%m/%Y')}*
 
 📈 *RENDIMIENTO ACUMULADO*
 • Total Picks: {stats.get('total_picks', 'N/A')}
@@ -132,26 +101,17 @@ def generate_report(stats):
 • ✅ Aciertos: {stats.get('aciertos', 'N/A')}
 • ❌ Errores: {stats.get('errores', 'N/A')}
 
- *MÉTRICAS CLAVE*
+🎯 *MÉTRICAS CLAVE*
 • Hit Rate: {stats.get('hit_rate', 'N/A')}%
 • PnL: {stats.get('pnl', 'N/A')} u
 • Yield: {stats.get('yield', 'N/A')}%
-
-🎯 *ANÁLISIS DEL MODELO*
 • EV Declarado: {stats.get('ev_medio', 'N/A')}%
 • Sobreestimación: +{stats.get('sobreestimacion', 'N/A')} pp
 • CLV Medio: {stats.get('clv_medio', 'N/A')}% ({clv_status})
 
 💡 *RECOMENDACIÓN*
 {recomendacion}
-
- *PRÓXIMOS PASOS*
-1. Revisar calibración del modelo
-2. Ajustar stakes según recomendación
-3. Monitorear CLV semanalmente
 """
-    return report
-
 
 def send_telegram_report(message):
     """Envía el informe a Telegram"""
@@ -159,51 +119,53 @@ def send_telegram_report(message):
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not bot_token or not chat_id:
-        print("❌ Error: TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID no configurados")
+        logging.error("Faltan variables de entorno de Telegram")
         return False
     
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    
     try:
+        import requests
         response = requests.post(url, json={
             "chat_id": chat_id,
             "text": message,
             "parse_mode": "Markdown"
-        }, timeout=10)
+        }, timeout=15)
         
         if response.status_code == 200:
-            print("✅ Informe enviado correctamente a Telegram")
+            logging.info("✅ Informe enviado correctamente a Telegram")
             return True
         else:
-            print(f"❌ Error en Telegram API: {response.text}")
+            logging.error(f"❌ Error en Telegram API: {response.text}")
             return False
-            
     except Exception as e:
-        print(f"❌ Error enviando a Telegram: {e}")
+        logging.error(f"❌ Excepción enviando a Telegram: {e}")
         return False
 
+@app.route('/')
+def health():
+    return jsonify({"status": "ok", "message": "Bot de informes activo y esperando trigger"}), 200
 
-def main():
-    """Función principal"""
-    print("🚀 Iniciando bot de informes semanales...")
+@app.route('/trigger', methods=['GET', 'POST'])
+def trigger_report():
+    """Endpoint que ejecuta el scraping y envío"""
+    logging.info("🚀 Iniciando proceso de informe semanal...")
     
-    # 1. Extraer datos
     text = extract_stats()
     if not text:
         send_telegram_report("❌ Error: No se pudo conectar con la web de estadísticas.")
-        return
+        return jsonify({"status": "error", "message": "Fallo en extracción"}), 500
     
-    # 2. Parsear estadísticas
     stats = parse_stats(text)
-    
-    # 3. Generar informe
     report = generate_report(stats)
+    success = send_telegram_report(report)
     
-    # 4. Enviar a Telegram
-    send_telegram_report(report)
-    
-    print("✅ Proceso completado")
+    if success:
+        return jsonify({"status": "success", "message": "Informe enviado a Telegram"}), 200
+    else:
+        return jsonify({"status": "error", "message": "Fallo al enviar a Telegram"}), 500
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Render asigna el puerto a través de la variable de entorno PORT, por defecto 10000
+    port = int(os.environ.get('PORT', 10000))
+    logging.info(f"Iniciando servidor en el puerto {port}...")
+    app.run(host='0.0.0.0', port=port)
