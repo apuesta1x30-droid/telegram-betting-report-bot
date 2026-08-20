@@ -1,84 +1,125 @@
 """
-Scraper de diagnóstico para la web de Streamlit.
-Toma screenshot, extrae HTML y prueba múltiples estrategias.
+Scraper optimizado para Streamlit.
+Extrae datos usando selectores específicos y wait_for.
 """
 
 from playwright.sync_api import sync_playwright
 import re
-import os
 
 
 def extract_stats():
     url = "https://football-betting-ai2-xay2ankt3xzaecxpbu6nwf.streamlit.app/"
     
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+        browser = p.chromium.launch(
+            headless=True, 
+            args=['--no-sandbox', '--disable-setuid-sandbox']
+        )
         page = browser.new_page(viewport={"width": 1280, "height": 900})
         
         print(f"Navegando a {url}...")
         page.goto(url, wait_until="networkidle", timeout=30000)
         
-        print("Esperando carga completa...")
-        page.wait_for_timeout(10000)
-        
-        # === DIAGNÓSTICO 1: Captura de pantalla ===
-        screenshot_path = "screenshot.png"
-        page.screenshot(path=screenshot_path, full_page=True)
-        print(f" Screenshot guardado en: {os.path.abspath(screenshot_path)}")
-        
-        # === DIAGNÓSTICO 2: HTML completo ===
-        html_content = page.content()
-        html_path = "page.html"
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-        print(f"📄 HTML guardado en: {os.path.abspath(html_path)}")
-        print(f"   Tamaño del HTML: {len(html_content)} caracteres")
-        
-        # === DIAGNÓSTICO 3: Texto con diferentes selectores ===
-        print("\n--- Prueba de selectores ---")
-        
-        # Selector 1: body
-        text_body = page.inner_text("body")
-        print(f"inner_text('body'): {len(text_body)} chars")
-        
-        # Selector 2: Streamlit container
+        print("Esperando a que carguen las estadísticas...")
+        # Esperar a que aparezca el título de Estadísticas Históricas
         try:
-            text_st = page.inner_text("[data-testid='stVerticalBlock']")
-            print(f"inner_text('stVerticalBlock'): {len(text_st)} chars")
+            page.wait_for_selector("text=Estadísticas Históricas", timeout=15000)
+            print("✅ Sección de estadísticas encontrada")
         except Exception as e:
-            print(f"stVerticalBlock: {e}")
+            print(f"️ Timeout esperando estadísticas: {e}")
         
-        # Selector 3: Todos los divs
+        # Pequeña pausa para asegurar renderizado completo
+        page.wait_for_timeout(3000)
+        
+        # === EXTRACCIÓN DE DATOS ===
+        stats = {}
+        
+        # Extraer todo el texto de la página para búsqueda flexible
         try:
-            text_divs = page.inner_text("div")
-            print(f"inner_text('div'): {len(text_divs)} chars")
+            # Usar stMarkdown o stText (selectores de Streamlit)
+            all_text = ""
+            for selector in ["[data-testid='stMarkdownContainer']", "div.stMarkdown", "div.stText", "body"]:
+                try:
+                    elements = page.query_selector_all(selector)
+                    for el in elements:
+                        text = el.inner_text()
+                        if text:
+                            all_text += text + "\n"
+                except:
+                    continue
+            
+            print(f"\n📄 Texto extraído: {len(all_text)} caracteres")
+            print("="*60)
+            # Mostrar solo las primeras líneas relevantes
+            lines = all_text.split('\n')
+            for line in lines[:30]:  # Primeras 30 líneas
+                if any(keyword in line.lower() for keyword in ['total', 'liquidados', 'acierto', 'error', 'hit', 'pnl', 'yield', 'ev']):
+                    print(f"  {line.strip()}")
+            print("="*60 + "\n")
+            
         except Exception as e:
-            print(f"div: {e}")
+            print(f"Error extrayendo texto: {e}")
+            all_text = ""
         
-        # Selector 4: Streamlit text elements
-        try:
-            elements = page.query_selector_all(".stText, .stMarkdown, p, h1, h2, h3, span")
-            print(f"Elementos de texto encontrados: {len(elements)}")
-            for i, el in enumerate(elements[:10]):
-                txt = el.inner_text()
-                if txt.strip():
-                    print(f"  [{i}] {txt[:100]}")
-        except Exception as e:
-            print(f"query_selector_all: {e}")
+        # === PARSEO DE DATOS ===
         
-        # === DIAGNÓSTICO 4: Título de la página ===
-        title = page.title()
-        print(f"\n📌 Título de la página: '{title}'")
+        # Total Picks
+        match = re.search(r"Total\s*Picks\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
+        stats["total_picks"] = int(match.group(1)) if match else None
         
-        # === DIAGNÓSTICO 5: URL actual ===
-        print(f"📌 URL actual: {page.url}")
+        # Liquidados
+        match = re.search(r"Liquidados\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
+        stats["liquidados"] = int(match.group(1)) if match else None
+        
+        # Aciertos
+        match = re.search(r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
+        stats["aciertos"] = int(match.group(1)) if match else None
+        
+        # Errores  
+        match = re.search(r"(?:\s*)?Errores?\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
+        stats["errores"] = int(match.group(1)) if match else None
+        
+        # Hit Rate
+        match = re.search(r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%", all_text, re.IGNORECASE)
+        stats["hit_rate"] = float(match.group(1)) if match else None
+        
+        # PnL (puede tener formato: -16.52 u o -16.52u)
+        match = re.search(r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u", all_text, re.IGNORECASE)
+        stats["pnl"] = float(match.group(1)) if match else None
+        
+        # Yield
+        match = re.search(r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE)
+        stats["yield"] = float(match.group(1)) if match else None
+        
+        # EV medio
+        match = re.search(r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE | re.DOTALL)
+        stats["ev_medio"] = float(match.group(1)) if match else None
+        
+        # Sobreestimación (buscar "SOBREESTIMA" o "sobreestima")
+        match = re.search(r"SOBREESTIMA.*?([-+]?\d+\.?\d*)\s*pp", all_text, re.IGNORECASE)
+        stats["sobreestimacion"] = float(match.group(1)) if match else None
+        
+        # CLV medio
+        match = re.search(r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE)
+        stats["clv_medio"] = float(match.group(1)) if match else None
         
         browser.close()
     
-    return {"screenshot": screenshot_path, "html": html_path}
+    print("\n📊 RESULTADOS DE EXTRACCIÓN:")
+    print("="*60)
+    for key, value in stats.items():
+        status = "✅" if value is not None else "❌"
+        print(f"  {status} {key}: {value}")
+    print("="*60)
+    
+    # Verificar cuántos datos se extrajeron
+    extracted_count = sum(1 for v in stats.values() if v is not None)
+    print(f"\n Éxito: {extracted_count}/{len(stats)} datos extraídos")
+    
+    return stats
 
 
 if __name__ == "__main__":
-    print("🔍 Iniciando scraper de diagnóstico...\n")
-    result = extract_stats()
-    print("\n✅ Diagnóstico completado")
+    stats = extract_stats()
+    print("\nDiccionario final:")
+    print(stats)
