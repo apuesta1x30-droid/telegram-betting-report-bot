@@ -1,163 +1,98 @@
 import os
-import re
+import json
 import logging
+import requests
 from datetime import datetime
-from flask import Flask, jsonify
-from playwright.sync_api import sync_playwright
 
-# Configurar logs para ver TODO en Render
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-app = Flask(__name__)
-
-def extract_stats():
-    url = "https://football-betting-ai2-xay2ankt3xzaecxpbu6nwf.streamlit.app/"
-    logging.info(f"🔍 Conectando a {url}...")
-    
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-gpu']
-        )
-        context = browser.new_context(
-            viewport={"width": 1280, "height": 900},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = context.new_page()
-        
-        try:
-            page.goto(url, wait_until="domcontentloaded", timeout=60000)
-            logging.info("⏳ Esperando 30 segundos para renderizado de Streamlit...")
-            page.wait_for_timeout(30000)
-            
-            all_text = page.inner_text("body")
-            logging.info(f"📝 Longitud del texto extraído: {len(all_text)} caracteres")
-            
-            # Mostrar un fragmento en los logs para depuración
-            if len(all_text) > 500:
-                logging.info(f"👀 Muestra del texto: {all_text[200:700]}")
-            else:
-                logging.warning("⚠️ El texto extraído es muy corto. Posible bloqueo de JS.")
-                
-            browser.close()
-            return all_text
-        except Exception as e:
-            logging.error(f"❌ Error en Playwright: {e}")
-            browser.close()
-            return None
-
-def parse_stats(text):
-    if not text:
+def load_stats():
+    try:
+        with open("datos.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        logging.error("❌ No se encontró datos.json. ¿Se ha exportado desde Streamlit?")
         return None
-    
-    stats = {}
-    patterns = {
-        "total_picks": r"Total\s*Picks\s*[:\s]*(\d+)",
-        "liquidados": r"Liquidados\s*[:\s]*(\d+)",
-        "pendientes": r"Pendientes\s*[:\s]*(\d+)",
-        "aciertos": r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)",
-        "errores": r"(?:\s*)?Errores?\s*[:\s]*(\d+)",
-        "hit_rate": r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%",
-        "pnl": r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u",
-        "yield": r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%",
-        "ev_medio": r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%",
-        "sobreestimacion": r"SOBREESTIMA.*?([-+]?\d+\.?\d*)\s*pp",
-        "clv_medio": r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%"
-    }
-    
-    for key, pattern in patterns.items():
-        match = re.search(pattern, text, re.IGNORECASE | (re.DOTALL if key == "ev_medio" else 0))
-        if match:
-            val = match.group(1)
-            stats[key] = float(val) if '.' in val else int(val)
-        else:
-            stats[key] = None
-    return stats
+    except Exception as e:
+        logging.error(f"❌ Error leyendo datos.json: {e}")
+        return None
 
 def generate_report(stats):
-    if not stats or stats.get('total_picks') is None:
-        return "❌ Error: No se pudieron extraer los datos. Revisa los logs de Render."
-    
-    sobreest = stats.get('sobreestimacion', 0) or 0
+    sobreest = float(stats.get('sobreestimacion', 0) or 0)
     if sobreest > 30:
-        recomendacion = "🚨 **CRÍTICO**: Sobreestimación grave. Reducir stake al 25% o pausar."
+        recomendacion = "🚨 **CRÍTICO**: Sobreestimación grave. Reducir stake al 25%."
     elif sobreest > 20:
         recomendacion = "⚠️ **ALERTA**: Sobreestimación alta. Reducir stake al 50%."
+    elif sobreest > 10:
+        recomendacion = "🟡 **PRECAUCIÓN**: Ligera sobreestimación."
     else:
-        recomendacion = "✅ **OK**: Modelo razonablemente calibrado."
+        recomendacion = "✅ **OK**: Modelo bien calibrado."
     
-    clv = stats.get('clv_medio', 0) or 0
+    clv = float(stats.get('clv_medio', 0) or 0)
     clv_status = "✅ Positivo" if clv > 0 else ("⚠️ Negativo leve" if clv > -5 else "❌ Negativo")
     
+    analisis_extra = ""
+    if 'mejor_mercado' in stats:
+        analisis_extra = f"\n🏆 Mejor mercado: {stats['mejor_mercado']} (Yield: {stats.get('yield_mejor_mercado', 'N/A')}%)"
+
     return f"""📊 *INFORME SEMANAL - {datetime.now().strftime('%d/%m/%Y')}*
 
-📈 *RENDIMIENTO*
-• Picks: {stats.get('total_picks', 'N/A')} (Liquidados: {stats.get('liquidados', 'N/A')})
+📈 *RENDIMIENTO GLOBAL*
+• Total Picks: {stats.get('total_picks', 'N/A')}
+• Liquidados: {stats.get('liquidados', 'N/A')}
 • Hit Rate: {stats.get('hit_rate', 'N/A')}%
-• PnL: {stats.get('pnl', 'N/A')} u | Yield: {stats.get('yield', 'N/A')}%
+• PnL: {stats.get('pnl', 'N/A')} u
+• Yield: {stats.get('yield', 'N/A')}%
 
-🎯 *MODELO*
+🎯 *CALIDAD DEL MODELO*
 • EV Declarado: {stats.get('ev_medio', 'N/A')}%
 • Sobreestimación: +{stats.get('sobreestimacion', 'N/A')} pp
 • CLV Medio: {stats.get('clv_medio', 'N/A')}% ({clv_status})
+• Bate al cierre: {stats.get('bate_cierre_pct', 'N/A')}%
 
 💡 *RECOMENDACIÓN*
-{recomendacion}
+{recomendacion}{analisis_extra}
+
+🕒 Actualizado: {stats.get('ultima_actualizacion', 'Desconocida')}
 """
 
-def send_telegram_report(message):
+def send_telegram(message):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     
     if not bot_token or not chat_id:
-        logging.error("❌ Faltan TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID en Render")
+        logging.error("❌ Faltan credenciales de Telegram")
         return False
     
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
     try:
-        import requests
         response = requests.post(url, json={
             "chat_id": chat_id,
             "text": message,
             "parse_mode": "Markdown"
-        }, timeout=15)
+        }, timeout=10)
         
         if response.status_code == 200:
-            logging.info("✅ Informe enviado a Telegram con éxito")
+            logging.info("✅ Informe enviado a Telegram")
             return True
         else:
-            logging.error(f"❌ Error Telegram API: {response.text}")
+            logging.error(f"❌ Error Telegram: {response.text}")
             return False
     except Exception as e:
-        logging.error(f"❌ Excepción enviando a Telegram: {e}")
+        logging.error(f"❌ Excepción: {e}")
         return False
 
-@app.route('/')
-def health():
-    return jsonify({"status": "ok", "message": "Bot activo"}), 200
-
-@app.route('/trigger', methods=['GET', 'POST'])
-def trigger_report():
-    logging.info("🚀 Iniciando proceso de informe...")
-    text = extract_stats()
+def main():
+    logging.info("🚀 Iniciando bot de informes...")
+    stats = load_stats()
     
-    if not text or len(text) < 500:
-        logging.error("❌ No se extrajo texto válido de la web.")
-        send_telegram_report("❌ Error: La web no devolvió datos. Posible bloqueo anti-bot.")
-        return jsonify({"status": "error", "message": "Fallo en extracción"}), 500
-    
-    stats = parse_stats(text)
-    logging.info(f"📊 Datos parseados: {stats}")
+    if not stats:
+        send_telegram("❌ Error: No se encontraron datos. Verifica que la app de Streamlit haya exportado `datos.json`")
+        return
     
     report = generate_report(stats)
-    success = send_telegram_report(report)
-    
-    if success:
-        return jsonify({"status": "success", "message": "Informe enviado"}), 200
-    else:
-        return jsonify({"status": "error", "message": "Fallo al enviar a Telegram"}), 500
+    send_telegram(report)
+    logging.info("✅ Proceso completado")
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 10000))
-    logging.info(f"🚀 Iniciando servidor Flask en el puerto {port}...")
-    app.run(host='0.0.0.0', port=port)
+    main()
