@@ -2,7 +2,7 @@ name: Weekly Betting Report
 
 on:
   schedule:
-    - cron: '0 4 * * 0'  # Domingos 04:00 UTC (05:00 AM Madrid invierno)
+    - cron: '30 4 * * 1'  # Lunes 04:30 UTC (06:30 AM Madrid en verano)
   workflow_dispatch:     # Permite ejecutarlo manualmente desde la pestaña Actions
 
 jobs:
