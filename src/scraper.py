@@ -1,125 +1,71 @@
 """
-Scraper optimizado para Streamlit.
-Extrae datos usando selectores específicos y wait_for.
+Scraper robusto para Streamlit con evasión de detección y tiempos de espera extendidos.
 """
 
 from playwright.sync_api import sync_playwright
 import re
+import os
 
 
 def extract_stats():
     url = "https://football-betting-ai2-xay2ankt3xzaecxpbu6nwf.streamlit.app/"
     
     with sync_playwright() as p:
+        # 1. Lanzar con argumentos anti-detección
         browser = p.chromium.launch(
             headless=True, 
-            args=['--no-sandbox', '--disable-setuid-sandbox']
+            args=[
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled'
+            ]
         )
-        page = browser.new_page(viewport={"width": 1280, "height": 900})
+        
+        # 2. Contexto con User-Agent realista de escritorio
+        context = browser.new_context(
+            viewport={"width": 1280, "height": 900},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = context.new_page()
         
         print(f"Navegando a {url}...")
-        page.goto(url, wait_until="networkidle", timeout=30000)
-        
-        print("Esperando a que carguen las estadísticas...")
-        # Esperar a que aparezca el título de Estadísticas Históricas
         try:
-            page.wait_for_selector("text=Estadísticas Históricas", timeout=15000)
-            print("✅ Sección de estadísticas encontrada")
+            # 3. Usar domcontentloaded en lugar de networkidle (Streamlit mantiene websockets abiertos)
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
         except Exception as e:
-            print(f"️ Timeout esperando estadísticas: {e}")
-        
-        # Pequeña pausa para asegurar renderizado completo
-        page.wait_for_timeout(3000)
-        
-        # === EXTRACCIÓN DE DATOS ===
-        stats = {}
-        
-        # Extraer todo el texto de la página para búsqueda flexible
-        try:
-            # Usar stMarkdown o stText (selectores de Streamlit)
-            all_text = ""
-            for selector in ["[data-testid='stMarkdownContainer']", "div.stMarkdown", "div.stText", "body"]:
-                try:
-                    elements = page.query_selector_all(selector)
-                    for el in elements:
-                        text = el.inner_text()
-                        if text:
-                            all_text += text + "\n"
-                except:
-                    continue
+            print(f"⚠️ Error en la navegación: {e}")
             
-            print(f"\n📄 Texto extraído: {len(all_text)} caracteres")
-            print("="*60)
-            # Mostrar solo las primeras líneas relevantes
-            lines = all_text.split('\n')
-            for line in lines[:30]:  # Primeras 30 líneas
-                if any(keyword in line.lower() for keyword in ['total', 'liquidados', 'acierto', 'error', 'hit', 'pnl', 'yield', 'ev']):
-                    print(f"  {line.strip()}")
-            print("="*60 + "\n")
-            
-        except Exception as e:
-            print(f"Error extrayendo texto: {e}")
-            all_text = ""
+        print("⏳ Esperando 30 segundos para que Streamlit renderice el contenido...")
+        page.wait_for_timeout(30000)
         
-        # === PARSEO DE DATOS ===
+        # === DIAGNÓSTICO VISUAL ===
+        screenshot_path = "screenshot.png"
+        page.screenshot(path=screenshot_path, full_page=True)
+        print(f"📸 Screenshot guardado en: {screenshot_path}")
         
-        # Total Picks
-        match = re.search(r"Total\s*Picks\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
-        stats["total_picks"] = int(match.group(1)) if match else None
+        html_content = page.content()
+        print(f"📄 Longitud del HTML: {len(html_content)} caracteres")
         
-        # Liquidados
-        match = re.search(r"Liquidados\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
-        stats["liquidados"] = int(match.group(1)) if match else None
+        if len(html_content) < 3000:
+            print("⚠️ ADVERTENCIA CRÍTICA: El HTML es muy corto. JavaScript NO se ejecutó.")
+            print("Contenido HTML:")
+            print(html_content)
         
-        # Aciertos
-        match = re.search(r"(?:✅\s*)?Aciertos\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
-        stats["aciertos"] = int(match.group(1)) if match else None
+        all_text = page.inner_text("body")
+        print(f"📝 Longitud del texto extraído: {len(all_text)} caracteres")
         
-        # Errores  
-        match = re.search(r"(?:\s*)?Errores?\s*[:\s]*(\d+)", all_text, re.IGNORECASE)
-        stats["errores"] = int(match.group(1)) if match else None
-        
-        # Hit Rate
-        match = re.search(r"Hit\s*Rate\s*[:\s]*([\d.]+)\s*%", all_text, re.IGNORECASE)
-        stats["hit_rate"] = float(match.group(1)) if match else None
-        
-        # PnL (puede tener formato: -16.52 u o -16.52u)
-        match = re.search(r"PnL\s*[:\s]*([-+]?\d+\.?\d*)\s*u", all_text, re.IGNORECASE)
-        stats["pnl"] = float(match.group(1)) if match else None
-        
-        # Yield
-        match = re.search(r"Yield\s*[:\s]*([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE)
-        stats["yield"] = float(match.group(1)) if match else None
-        
-        # EV medio
-        match = re.search(r"EV\s*medio.*?([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE | re.DOTALL)
-        stats["ev_medio"] = float(match.group(1)) if match else None
-        
-        # Sobreestimación (buscar "SOBREESTIMA" o "sobreestima")
-        match = re.search(r"SOBREESTIMA.*?([-+]?\d+\.?\d*)\s*pp", all_text, re.IGNORECASE)
-        stats["sobreestimacion"] = float(match.group(1)) if match else None
-        
-        # CLV medio
-        match = re.search(r"CLV\s*medio\s*[:\s]*([-+]?\d+\.?\d*)\s*%", all_text, re.IGNORECASE)
-        stats["clv_medio"] = float(match.group(1)) if match else None
+        print("\n--- Muestra del texto extraído (primeras 30 líneas no vacías) ---")
+        lines = [line.strip() for line in all_text.split('\n') if line.strip()]
+        for i, line in enumerate(lines[:30]):
+            print(f"  {i+1}. {line}")
+        print("------------------------------------------------------------------\n")
         
         browser.close()
-    
-    print("\n📊 RESULTADOS DE EXTRACCIÓN:")
-    print("="*60)
-    for key, value in stats.items():
-        status = "✅" if value is not None else "❌"
-        print(f"  {status} {key}: {value}")
-    print("="*60)
-    
-    # Verificar cuántos datos se extrajeron
-    extracted_count = sum(1 for v in stats.values() if v is not None)
-    print(f"\n Éxito: {extracted_count}/{len(stats)} datos extraídos")
-    
-    return stats
+        
+    return all_text
 
 
 if __name__ == "__main__":
-    stats = extract_stats()
-    print("\nDiccionario final:")
-    print(stats)
+    print("🔍 Iniciando scraper robusto...\n")
+    text = extract_stats()
+    print("✅ Proceso finalizado. Revisa los artifacts en GitHub Actions.")
