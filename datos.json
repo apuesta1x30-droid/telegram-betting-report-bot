@@ -1,15 +1,15 @@
 {
-    "total_picks": 265,
-    "liquidados": 209,
-    "pendientes": 32,
-    "aciertos": 80,
-    "errores": 129,
+    "total_picks": 269,
+    "liquidados": 227,
+    "pendientes": 1,
+    "aciertos": 87,
+    "errores": 140,
     "hit_rate": 38.3,
-    "pnl": -20.97,
-    "yield": -10.0,
-    "ev_medio": 19.5,
-    "sobreestimacion": 29.6,
-    "clv_medio": -2.6,
-    "bate_cierre_pct": 30.7,
-    "ultima_actualizacion": "02/09/2026 05:52"
+    "pnl": -21.27,
+    "yield": -9.4,
+    "ev_medio": 18.8,
+    "sobreestimacion": 28.2,
+    "clv_medio": -2.7,
+    "bate_cierre_pct": 30.4,
+    "ultima_actualizacion": "07/09/2026 03:58"
 }
